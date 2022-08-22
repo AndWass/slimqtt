@@ -1,5 +1,5 @@
 use bytes::BytesMut;
-use futures::{Sink, Stream, StreamExt};
+use futures::{Sink, Stream};
 use mqttbytes::v4::Packet;
 use std::pin::Pin;
 use std::task::{Context, Poll};

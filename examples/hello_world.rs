@@ -1,4 +1,3 @@
-use mqttbytes::QoS;
 use slimqtt::session::*;
 use std::time::Duration;
 

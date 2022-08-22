@@ -165,15 +165,8 @@ impl<T: Unpin + AsyncRead + AsyncWrite> MqttStream<T> {
     }
 
     pub async fn next(&mut self) -> Result<Packet, Error> {
-        loop {
-            let packet = self.stream.try_next().await?;
-            return if let Some(packet) = packet {
-                Ok(packet)
-            } else {
-                log::warn!("Unexpected None from stream.try_next");
-                Err(Error::ConnectionClosed)
-            };
-        }
+        let packet = self.stream.try_next().await?;
+        packet.ok_or(Error::ConnectionClosed)
     }
 
     pub async fn send<Item>(&mut self, item: Item) -> Result<(), Error>
@@ -382,10 +375,6 @@ mod tests {
     use mqttbytes::v4;
     use mqttbytes::v4::Packet;
     use std::time::Duration;
-
-    struct Fixture {
-
-    }
 
     #[tokio::test]
     async fn first_message_is_connect() {
