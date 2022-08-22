@@ -122,6 +122,62 @@ enc_impl!(Subscribe);
 enc_impl!(UnsubAck);
 enc_impl!(Unsubscribe);
 
+pub trait TryAs<T>: Sized {
+    fn try_as(self) -> Result<T, Self>;
+}
+
+macro_rules! try_as_impl {
+    ($target:ident) => {
+        impl TryAs<mqttbytes::v4::$target> for Packet {
+            fn try_as(self) -> Result<mqttbytes::v4::$target, Self> {
+                match self {
+                    Packet::$target(x) => Ok(x),
+                    e => Err(e),
+                }
+            }
+        }
+    };
+}
+
+try_as_impl!(ConnAck);
+try_as_impl!(Connect);
+try_as_impl!(PubAck);
+try_as_impl!(PubComp);
+try_as_impl!(PubRec);
+try_as_impl!(PubRel);
+try_as_impl!(Publish);
+try_as_impl!(SubAck);
+try_as_impl!(Subscribe);
+try_as_impl!(UnsubAck);
+try_as_impl!(Unsubscribe);
+
+impl TryAs<mqttbytes::v4::PingReq> for Packet {
+    fn try_as(self) -> Result<mqttbytes::v4::PingReq, Self> {
+        match self {
+            Packet::PingReq => Ok(mqttbytes::v4::PingReq),
+            e => Err(e),
+        }
+    }
+}
+
+impl TryAs<mqttbytes::v4::PingResp> for Packet {
+    fn try_as(self) -> Result<mqttbytes::v4::PingResp, Self> {
+        match self {
+            Packet::PingResp => Ok(mqttbytes::v4::PingResp),
+            e => Err(e),
+        }
+    }
+}
+
+impl TryAs<mqttbytes::v4::Disconnect> for Packet {
+    fn try_as(self) -> Result<mqttbytes::v4::Disconnect, Self> {
+        match self {
+            Packet::Disconnect => Ok(mqttbytes::v4::Disconnect),
+            e => Err(e),
+        }
+    }
+}
+
 use pin_project_lite::pin_project;
 
 pin_project! {
