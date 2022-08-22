@@ -61,17 +61,17 @@
 //! # });
 //! ```
 
+use std::time::Duration;
+
 use futures::{SinkExt, TryStreamExt};
 use mqttbytes::v4::Packet;
-use std::time::Duration;
+pub use mqttbytes::v4::{Login, SubscribeFilter};
+pub use mqttbytes::QoS;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Encoder;
 use tokio_util::either::Either;
 
 use crate::codec::{Codec, CodecError};
-
-pub use mqttbytes::v4::{Login, SubscribeFilter};
-pub use mqttbytes::QoS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -369,23 +369,34 @@ impl<T: Unpin + AsyncRead + AsyncWrite> Session<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::codec::Codec;
-    use crate::session::{Session, SessionConfig};
-    use futures::StreamExt;
-    use mqttbytes::v4;
-    use mqttbytes::v4::Packet;
+    use std::ops::Deref;
     use std::time::Duration;
+
+    use bytes::Bytes;
+    use futures::{SinkExt, StreamExt};
+    use mqttbytes::v4::Packet;
+    use mqttbytes::{v4, QoS};
+    use tokio::io::DuplexStream;
+    use tokio::task::JoinHandle;
+
+    use crate::session::{Error, Session, SessionConfig};
+
+    fn make_session(
+        config: SessionConfig,
+    ) -> (
+        crate::codec::Framed<DuplexStream>,
+        JoinHandle<Result<(), Error>>,
+    ) {
+        let (s, stream) = tokio::io::duplex(256);
+        let join = tokio::spawn(async move { Session::new(s, config).run().await });
+
+        (crate::codec::Framed::new(stream), join)
+    }
 
     #[tokio::test]
     async fn first_message_is_connect() {
-        let (s, stream) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            Session::new(s, SessionConfig::new("hello-world"))
-                .run()
-                .await
-        });
+        let (mut stream, _join) = make_session(SessionConfig::new("hello-world"));
 
-        let mut stream = tokio_util::codec::Framed::new(stream, Codec);
         let message = stream.next().await.unwrap().unwrap();
         assert_eq!(
             message,
@@ -401,22 +412,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disconnect_on_not_connack() {
+        use v4::*;
+        let packets = [
+            /*Packet::PingResp,
+            Packet::PingReq,
+            Packet::Connect(Connect::new("hello")),
+            Packet::Disconnect,
+            Packet::PubAck(PubAck::new(10)),
+            Packet::PubComp(PubComp::new(10)),
+            Packet::PubRec(PubRec::new(10)),
+            Packet::PubRel(PubRel::new(10)),*/
+            Packet::Publish(Publish {
+                pkid: 10,
+                payload: Bytes::from_static(&[1]),
+                dup: false,
+                qos: QoS::AtMostOnce,
+                retain: false,
+                topic: "/hello".to_string(),
+            }),
+            /*Packet::Subscribe(Subscribe {
+                pkid: 10,
+                filters: vec![SubscribeFilter::new("/hello".to_string(), QoS::AtLeastOnce)],
+            }),*/
+            Packet::SubAck(SubAck::new(100, vec![SubscribeReasonCode::Failure])),
+            //Packet::Unsubscribe(Unsubscribe::new("/hello")),
+            //Packet::UnsubAck(UnsubAck::new(100)),
+        ];
+
+        for packet in &packets {
+            packet.deref();
+            let test = 0;
+            let (mut stream, task) = make_session(SessionConfig::new("hello-world"));
+            let _connect = stream.next().await.unwrap().unwrap();
+            stream.send(packet).await.unwrap();
+            /*let none = stream.next().await;
+            assert!(none.is_none());*/
+            assert!(task.is_finished());
+            let task_res = task.await.unwrap().unwrap_err();
+            assert!(
+                matches!(task_res, Error::NotConnack(x) if x == *packet)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn disconnect_if_no_connack() {
         tokio::time::pause();
 
-        let (s, stream) = tokio::io::duplex(256);
-        let task = tokio::spawn(async move {
-            Session::new(s, SessionConfig::new("hello-world"))
-                .run()
-                .await
-        });
+        let (mut stream, task) = make_session(SessionConfig::new("hello-world"));
 
-        let mut stream = tokio_util::codec::Framed::new(stream, Codec);
-        let _connack = stream.next().await.unwrap().unwrap();
+        let _connect = stream.next().await.unwrap().unwrap();
         tokio::time::advance(Duration::from_secs(5 * 60)).await;
         assert!(!task.is_finished());
         tokio::time::advance(Duration::from_secs(151)).await;
         let result = task.await.unwrap().unwrap_err();
         assert!(matches!(result, super::Error::KeepAliveTimeout));
+    }
+
+    #[tokio::test]
+    async fn ping_req_resp() {
+        tokio::time::pause();
+
+        let (mut stream, task) = make_session(SessionConfig::new("hello-world"));
+
+        let _connect = stream.next().await.unwrap().unwrap();
+        stream
+            .send(v4::ConnAck {
+                code: v4::ConnectReturnCode::Success,
+                session_present: false,
+            })
+            .await
+            .unwrap();
+
+        for _ in 0..1000 {
+            tokio::time::advance(Duration::from_secs(5 * 60 + 1)).await;
+            let ping = stream.next().await.unwrap().unwrap();
+            assert_eq!(ping, Packet::PingReq);
+            stream.send(v4::PingResp).await.unwrap();
+            assert!(!task.is_finished());
+        }
     }
 }

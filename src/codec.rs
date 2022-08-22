@@ -71,6 +71,14 @@ impl Encoder<&Packet> for Codec {
     }
 }
 
+impl Encoder<Packet> for Codec {
+    type Error = CodecError;
+
+    fn encode(&mut self, item: Packet, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode(&item, dst)
+    }
+}
+
 macro_rules! enc_impl {
     ($for_:ident) => {
         impl Encoder<&mqttbytes::v4::$for_> for Codec {
@@ -78,6 +86,18 @@ macro_rules! enc_impl {
             fn encode(
                 &mut self,
                 item: &mqttbytes::v4::$for_,
+                dst: &mut BytesMut,
+            ) -> Result<(), Self::Error> {
+                item.write(dst)?;
+                Ok(())
+            }
+        }
+
+        impl Encoder<mqttbytes::v4::$for_> for Codec {
+            type Error = CodecError;
+            fn encode(
+                &mut self,
+                item: mqttbytes::v4::$for_,
                 dst: &mut BytesMut,
             ) -> Result<(), Self::Error> {
                 item.write(dst)?;
