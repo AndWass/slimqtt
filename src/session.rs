@@ -48,19 +48,18 @@
 //!
 //! ```no_run
 //! # use slimqtt::session::SessionTask;
-//! tokio_test::block_on( async move {
-//! use std::time::Duration;
-//! use slimqtt::session::{Session, SessionConfig};
-//! use tokio::net::TcpStream;
-//!
+//! # use std::time::Duration;
+//! # use slimqtt::session::{Session, SessionConfig};
+//! # use tokio::net::TcpStream;
+//! # tokio_test::block_on( async move {
 //! let mut options = SessionConfig::new("slimqtt-client");
 //! options.keep_alive = Duration::from_secs(5);
 //!
 //! let stream = TcpStream::connect("test.mosquitto.org:1883").await.unwrap();
-//! let mut session = Session::new(stream, options);
-//! // Run the session event loop. If/when this returns
+//! let mut task = Session::new(stream, options);
+//! // Run the task loop. If/when this returns
 //! // the session cannot be restarted without calling reset first.
-//! println!("Session result: {:?}", session.run().await);
+//! println!("Session result: {:?}", task.run().await);
 //! # });
 //! ```
 
