@@ -193,7 +193,9 @@ enum State {
 /// Configuration values for setting up a session
 #[derive(Clone, PartialEq, Debug)]
 pub struct SessionConfig {
+    /// Client ID sent to the broker.
     pub client_id: String,
+    /// Optional login data
     pub login: Option<Login>,
     /// Keep alive. Note that MQTT only uses whole seconds for keep alive.
     ///
@@ -203,6 +205,7 @@ pub struct SessionConfig {
     /// for [`Session`] for more information on how keep alive is used.
     ///
     pub keep_alive: Duration,
+    /// Request a clean session or to reuse an existing session on the broker side.
     pub clean_session: bool,
 }
 
