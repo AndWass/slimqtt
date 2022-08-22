@@ -369,7 +369,6 @@ impl<T: Unpin + AsyncRead + AsyncWrite> Session<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
     use std::time::Duration;
 
     use bytes::Bytes;
@@ -415,44 +414,43 @@ mod tests {
     async fn disconnect_on_not_connack() {
         use v4::*;
         let packets = [
-            /*Packet::PingResp,
+            Packet::PingResp,
             Packet::PingReq,
             Packet::Connect(Connect::new("hello")),
             Packet::Disconnect,
             Packet::PubAck(PubAck::new(10)),
             Packet::PubComp(PubComp::new(10)),
             Packet::PubRec(PubRec::new(10)),
-            Packet::PubRel(PubRel::new(10)),*/
+            Packet::PubRel(PubRel::new(10)),
             Packet::Publish(Publish {
                 pkid: 10,
                 payload: Bytes::from_static(&[1]),
                 dup: false,
-                qos: QoS::AtMostOnce,
+                qos: QoS::AtLeastOnce,
                 retain: false,
                 topic: "/hello".to_string(),
             }),
-            /*Packet::Subscribe(Subscribe {
+            Packet::Subscribe(Subscribe {
                 pkid: 10,
                 filters: vec![SubscribeFilter::new("/hello".to_string(), QoS::AtLeastOnce)],
-            }),*/
+            }),
             Packet::SubAck(SubAck::new(100, vec![SubscribeReasonCode::Failure])),
-            //Packet::Unsubscribe(Unsubscribe::new("/hello")),
-            //Packet::UnsubAck(UnsubAck::new(100)),
+            Packet::Unsubscribe(Unsubscribe::new("/hello")),
+            Packet::UnsubAck(UnsubAck::new(100)),
         ];
 
         for packet in &packets {
-            packet.deref();
-            let test = 0;
             let (mut stream, task) = make_session(SessionConfig::new("hello-world"));
             let _connect = stream.next().await.unwrap().unwrap();
             stream.send(packet).await.unwrap();
-            /*let none = stream.next().await;
-            assert!(none.is_none());*/
+            let none = stream.next().await;
+            assert!(none.is_none());
             assert!(task.is_finished());
             let task_res = task.await.unwrap().unwrap_err();
-            assert!(
-                matches!(task_res, Error::NotConnack(x) if x == *packet)
-            );
+            match task_res {
+                Error::NotConnack(x) => assert_eq!(x, *packet),
+                x => assert!(false, "Unexpected error {:?} for {:?}", x, *packet),
+            }
         }
     }
 
