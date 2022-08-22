@@ -73,6 +73,10 @@ use tokio_util::either::Either;
 
 use crate::codec::{Codec, CodecError};
 
+fn clamp_keep_alive(duration: Duration) -> Duration {
+    duration.min(Duration::from_secs(u16::MAX.into()))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -191,6 +195,13 @@ enum State {
 pub struct SessionConfig {
     pub client_id: String,
     pub login: Option<Login>,
+    /// Keep alive. Note that MQTT only uses whole seconds for keep alive.
+    ///
+    /// A value greater than `u16::MAX` seconds will be truncated to `u16::MAX`.
+    ///
+    /// Set to zero to disable keep alive handling (not recommended though). See the documentation
+    /// for [`Session`] for more information on how keep alive is used.
+    ///
     pub keep_alive: Duration,
     pub clean_session: bool,
 }
@@ -243,7 +254,9 @@ pub struct Session<T> {
 }
 
 impl<T: Unpin + AsyncRead + AsyncWrite> Session<T> {
-    pub fn new(stream: T, config: SessionConfig) -> Self {
+    pub fn new(stream: T, mut config: SessionConfig) -> Self {
+        config.keep_alive = clamp_keep_alive(config.keep_alive);
+
         let mut connect = mqttbytes::v4::Connect::new(config.client_id);
         connect.clean_session = config.clean_session;
         connect.keep_alive = config.keep_alive.as_secs() as u16;
@@ -371,6 +384,7 @@ impl<T: Unpin + AsyncRead + AsyncWrite> Session<T> {
 mod tests {
     use std::time::Duration;
 
+    use crate::codec::TryAs;
     use bytes::Bytes;
     use futures::{SinkExt, StreamExt};
     use mqttbytes::v4::Packet;
@@ -490,5 +504,26 @@ mod tests {
             stream.send(v4::PingResp).await.unwrap();
             assert!(!task.is_finished());
         }
+    }
+
+    #[tokio::test]
+    async fn large_keep_alive() {
+        tokio::time::pause();
+
+        let mut config = SessionConfig::new("client");
+        config.keep_alive = Duration::from_secs(0x120012); // Greater than u16::MAX
+        let (mut stream, _) = make_session(config);
+        let connect: v4::Connect = stream.next().await.unwrap().unwrap().try_as().unwrap();
+        assert_eq!(connect.keep_alive, u16::MAX);
+        stream
+            .send(v4::ConnAck {
+                code: v4::ConnectReturnCode::Success,
+                session_present: false,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::advance(Duration::from_secs(65536)).await;
+        let _ping: v4::PingReq = stream.next().await.unwrap().unwrap().try_as().unwrap();
     }
 }
