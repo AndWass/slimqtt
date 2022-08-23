@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use futures::{Sink, SinkExt, TryStreamExt};
 use mqttbytes::v4::Packet;
 use mqttbytes::QoS;
@@ -6,6 +7,7 @@ use std::time::Duration;
 use crate::session::{Error, SessionConfig};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::codec::CodecError;
 use tokio_util::either::Either;
 
 enum KeepAlive {
@@ -96,21 +98,42 @@ enum State {
     NeedReset,
 }
 
+#[derive(Debug)]
+pub struct PublishEvent {
+    pub topic: String,
+    pub data: Bytes,
+    pub response: tokio::sync::oneshot::Sender<Result<(), crate::session::PublishError>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum SessionEvent {
+    Publish(PublishEvent),
+}
+
 pub struct SessionTask<T> {
     stream: MqttStream<T>,
     state: State,
     keep_alive: KeepAliveTimer,
     config: SessionConfig,
+    session_events: tokio::sync::mpsc::Receiver<SessionEvent>,
 }
 
 impl<T: Unpin + AsyncRead + AsyncWrite> SessionTask<T> {
-    pub(crate) fn new(stream: T, config: SessionConfig) -> Self {
-        Self {
-            stream: MqttStream::new(stream),
-            state: State::SendConnect,
-            keep_alive: KeepAliveTimer::new(config.keep_alive()),
-            config,
-        }
+    pub(crate) fn new(
+        stream: T,
+        config: SessionConfig,
+    ) -> (Self, tokio::sync::mpsc::Sender<SessionEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        (
+            Self {
+                stream: MqttStream::new(stream),
+                state: State::SendConnect,
+                keep_alive: KeepAliveTimer::new(config.keep_alive()),
+                config,
+                session_events: rx,
+            },
+            tx,
+        )
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -176,50 +199,84 @@ impl<T: Unpin + AsyncRead + AsyncWrite> SessionTask<T> {
     }
 
     async fn handle_connected_state(&mut self) -> Result<(), Error> {
-        use mqttbytes::v4::*;
         loop {
             tokio::select! {
                 packet = self.stream.next() => {
-                    self.keep_alive.reset();
-                    match packet? {
-                        Packet::Publish(publish) => {
-                            log::debug!("Received {:?}", publish);
-                            if publish.qos == QoS::AtLeastOnce {
-                                log::debug!("Sending PUBACK for {}", publish.pkid);
-                                self.stream.send(&PubAck::new(publish.pkid)).await?;
-                            }
-                            else if publish.qos == QoS::ExactlyOnce {
-                                log::debug!("Sending PUBREC for {}", publish.pkid);
-                                self.stream.send(&PubRec::new(publish.pkid)).await?;
-                            }
-                        },
-                        Packet::PubRel(pubrel) => {
-                            log::debug!("PUBREL received: {:?}", pubrel);
-                            self.stream.send(&PubComp::new(pubrel.pkid)).await?;
-                        },
-                        Packet::Disconnect => {
-                            log::debug!("DISCONNECT received");
-                            return Err(Error::ConnectionClosed);
-                        }
-                        x => {
-                            log::debug!("Received {:?}", x);
-                        }
-                    }
+                    self.handle_connected_server_packet(packet?).await?;
                 },
                 keep_alive = self.keep_alive.wait() => {
-                    match keep_alive {
-                        KeepAlive::PingRequest => {
-                            log::debug!("Writing ping request");
-                            self.stream.send(&mqttbytes::v4::PingReq).await?;
-                        },
-                        KeepAlive::PingResponseDeadline => {
-                            log::debug!("Ping response deadline reached");
-                            return Err(Error::KeepAliveTimeout);
-                        }
-                    }
+                    self.handle_connected_keep_alive(keep_alive).await?;
                 },
+                event = self.session_events.recv() => {
+                    self.handle_connected_session_event(event.ok_or(Error::UserStop)?).await?;
+                }
             }
         }
+    }
+
+    async fn handle_connected_server_packet(&mut self, packet: Packet) -> Result<(), Error> {
+        use mqttbytes::v4::*;
+        self.keep_alive.reset();
+        match packet {
+            Packet::Publish(publish) => {
+                log::debug!("Received {:?}", publish);
+                if publish.qos == QoS::AtLeastOnce {
+                    log::debug!("Sending PUBACK for {}", publish.pkid);
+                    self.stream.send(&PubAck::new(publish.pkid)).await?;
+                } else if publish.qos == QoS::ExactlyOnce {
+                    log::debug!("Sending PUBREC for {}", publish.pkid);
+                    self.stream.send(&PubRec::new(publish.pkid)).await?;
+                }
+            }
+            Packet::PubRel(pubrel) => {
+                log::debug!("PUBREL received: {:?}", pubrel);
+                self.stream.send(&PubComp::new(pubrel.pkid)).await?;
+            }
+            Packet::Disconnect => {
+                log::debug!("DISCONNECT received");
+                return Err(Error::ConnectionClosed);
+            }
+            x => {
+                log::debug!("Received {:?}", x);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_connected_keep_alive(&mut self, keep_alive: KeepAlive) -> Result<(), Error> {
+        match keep_alive {
+            KeepAlive::PingRequest => {
+                log::debug!("Writing ping request");
+                self.stream.send(&mqttbytes::v4::PingReq).await?;
+                Ok(())
+            }
+            KeepAlive::PingResponseDeadline => {
+                log::debug!("Ping response deadline reached");
+                Err(Error::KeepAliveTimeout)
+            }
+        }
+    }
+
+    async fn handle_connected_session_event(&mut self, event: SessionEvent) -> Result<(), Error> {
+        use mqttbytes::v4;
+        match event {
+            SessionEvent::Publish(evt) => {
+                log::debug!("Publishing {} bytes to {}", evt.data.len(), evt.topic);
+                let result = self
+                    .stream
+                    .send(v4::Publish::new(evt.topic, QoS::AtMostOnce, evt.data))
+                    .await;
+                let response = if let Err(e) = &result {
+                    Err(crate::session::PublishError::from(e))
+                } else {
+                    Ok(())
+                };
+                let _ = evt.response.send(response);
+                result?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -246,7 +303,8 @@ mod tests {
         JoinHandle<Result<(), Error>>,
     ) {
         let (s, stream) = tokio::io::duplex(256);
-        let join = tokio::spawn(async move { SessionTask::new(s, config).run().await });
+        let (mut task, evt_tx) = SessionTask::new(s, config);
+        let join = tokio::spawn(async move { task.run().await });
 
         (crate::codec::Framed::new(stream), join)
     }

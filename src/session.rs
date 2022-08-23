@@ -71,9 +71,9 @@ use mqttbytes::v4::Packet;
 
 use crate::codec::CodecError;
 
-pub use mqttbytes::v4::{Login, SubscribeFilter, LastWill};
-pub use mqttbytes::QoS;
 use mqttbytes::v4;
+pub use mqttbytes::v4::{LastWill, Login, SubscribeFilter};
+pub use mqttbytes::QoS;
 pub use task::SessionTask;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -93,6 +93,8 @@ pub enum Error {
     NeedReset,
     #[error("Connection closed for unknown reason")]
     ConnectionClosed,
+    #[error("The user requested that the session should be closed")]
+    UserStop,
 }
 
 impl From<CodecError> for Error {
@@ -104,10 +106,29 @@ impl From<CodecError> for Error {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PublishError {
+    #[error("Some IO error ocurred: {0}")]
+    IoError(std::io::ErrorKind),
+    #[error("Protocol message error: {0}")]
+    ProtocolError(mqttbytes::Error),
+    #[error("Session has ended before message could be published")]
+    SessionEnded,
+}
+
+impl From<&CodecError> for PublishError {
+    fn from(err: &CodecError) -> Self {
+        match err {
+            CodecError::IoError(x) => Self::IoError(x.kind()),
+            CodecError::ProtocolError(err) => Self::ProtocolError(err.clone()),
+        }
+    }
+}
+
 /// Configuration values for setting up a session
 #[derive(Clone, PartialEq, Debug)]
 pub struct SessionConfig {
-    connect: v4::Connect
+    connect: v4::Connect,
 }
 
 impl SessionConfig {
@@ -149,8 +170,8 @@ impl SessionConfig {
                 keep_alive: 5 * 60,
                 clean_session: false,
                 last_will: None,
-                protocol: mqttbytes::Protocol::V4
-            }
+                protocol: mqttbytes::Protocol::V4,
+            },
         }
     }
 
@@ -176,7 +197,9 @@ impl SessionConfig {
     ///
     /// Set to zero to disable keep alive handling (not recommended though).
     pub fn set_keep_alive(&mut self, keep_alive: Duration) -> &mut Self {
-        self.connect.keep_alive = keep_alive.min(Duration::from_secs(u16::MAX.into())).as_secs() as u16;
+        self.connect.keep_alive = keep_alive
+            .min(Duration::from_secs(u16::MAX.into()))
+            .as_secs() as u16;
         self
     }
 
@@ -207,13 +230,39 @@ impl SessionConfig {
     }
 }
 
-pub struct Session {}
+pub struct Session {
+    task_channel: tokio::sync::mpsc::Sender<task::SessionEvent>,
+}
 
 impl Session {
     pub fn new<Stream>(stream: Stream, config: SessionConfig) -> (Session, SessionTask<Stream>)
     where
         Stream: Unpin + AsyncRead + AsyncWrite,
     {
-        (Session {}, SessionTask::new(stream, config))
+        let (task, channel) = SessionTask::new(stream, config);
+        (
+            Session {
+                task_channel: channel,
+            },
+            task,
+        )
+    }
+
+    pub async fn publish<S: ToString, B: Into<bytes::Bytes>>(
+        &mut self,
+        topic: S,
+        data: B,
+    ) -> Result<(), PublishError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.task_channel
+            .send(task::SessionEvent::Publish(task::PublishEvent {
+                topic: topic.to_string(),
+                data: data.into(),
+                response: tx,
+            }))
+            .await
+            .or_else(|_| Err(PublishError::SessionEnded))?;
+
+        rx.await.unwrap_or(Err(PublishError::SessionEnded))
     }
 }

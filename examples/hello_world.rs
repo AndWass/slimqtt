@@ -9,14 +9,15 @@ async fn main() {
         .await
         .unwrap();
     let mut config = SessionConfig::new("slimqtt-hello-world");
-    config
-        .set_keep_alive(Duration::from_secs(30))
-        .set_last_will(Some(LastWill::new(
-            "/hello-slimqtt",
-            b"Hello world".to_vec(),
-            QoS::AtLeastOnce,
-            false,
-        )));
+    config.set_keep_alive(Duration::from_secs(30));
     let (mut session, mut task) = Session::new(stream, config);
-    log::info!("{:?}", task.run().await);
+    tokio::spawn(async move { task.run().await });
+    for x in 1..=10 {
+        println!(
+            "Publish result: {:?}",
+            session
+                .publish("/slimqtt", format!("Hello world {}", x))
+                .await
+        );
+    }
 }
