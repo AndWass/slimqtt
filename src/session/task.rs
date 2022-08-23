@@ -8,10 +8,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use tokio_util::either::Either;
 
-fn clamp_keep_alive(duration: Duration) -> Duration {
-    duration.min(Duration::from_secs(u16::MAX.into()))
-}
-
 enum KeepAlive {
     PingRequest,
     PingResponseDeadline,
@@ -104,23 +100,16 @@ pub struct SessionTask<T> {
     stream: MqttStream<T>,
     state: State,
     keep_alive: KeepAliveTimer,
-    connect: mqttbytes::v4::Connect,
+    config: SessionConfig,
 }
 
 impl<T: Unpin + AsyncRead + AsyncWrite> SessionTask<T> {
-    pub(crate) fn new(stream: T, mut config: SessionConfig) -> Self {
-        config.keep_alive = clamp_keep_alive(config.keep_alive);
-
-        let mut connect = mqttbytes::v4::Connect::new(config.client_id);
-        connect.clean_session = config.clean_session;
-        connect.keep_alive = config.keep_alive.as_secs() as u16;
-        connect.login = config.login;
-
+    pub(crate) fn new(stream: T, config: SessionConfig) -> Self {
         Self {
             stream: MqttStream::new(stream),
             state: State::SendConnect,
-            keep_alive: KeepAliveTimer::new(config.keep_alive),
-            connect,
+            keep_alive: KeepAliveTimer::new(config.keep_alive()),
+            config,
         }
     }
 
@@ -135,7 +124,7 @@ impl<T: Unpin + AsyncRead + AsyncWrite> SessionTask<T> {
             match self.state {
                 State::SendConnect => {
                     log::debug!("Sending CONNECT");
-                    self.stream.send(&self.connect).await?;
+                    self.stream.send(self.config.as_connect()).await?;
                     self.keep_alive.reset();
                     self.state = State::WaitingConnAck;
                 }
@@ -367,7 +356,8 @@ mod tests {
         tokio::time::pause();
 
         let mut config = SessionConfig::new("client");
-        config.keep_alive = Duration::from_secs(0x120012); // Greater than u16::MAX
+        config.set_keep_alive(Duration::from_secs(0x120012));
+
         let (mut stream, _) = make_session(config);
         let connect: v4::Connect = stream.next().await.unwrap().unwrap().try_as().unwrap();
         assert_eq!(connect.keep_alive, u16::MAX);

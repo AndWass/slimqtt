@@ -53,7 +53,7 @@
 //! # use tokio::net::TcpStream;
 //! # tokio_test::block_on( async move {
 //! let mut options = SessionConfig::new("slimqtt-client");
-//! options.keep_alive = Duration::from_secs(5);
+//! options.set_keep_alive(Duration::from_secs(5));
 //!
 //! let stream = TcpStream::connect("test.mosquitto.org:1883").await.unwrap();
 //! let (mut session, mut task) = Session::new(stream, options);
@@ -71,8 +71,9 @@ use mqttbytes::v4::Packet;
 
 use crate::codec::CodecError;
 
-pub use mqttbytes::v4::{Login, SubscribeFilter};
+pub use mqttbytes::v4::{Login, SubscribeFilter, LastWill};
 pub use mqttbytes::QoS;
+use mqttbytes::v4;
 pub use task::SessionTask;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -106,21 +107,7 @@ impl From<CodecError> for Error {
 /// Configuration values for setting up a session
 #[derive(Clone, PartialEq, Debug)]
 pub struct SessionConfig {
-    /// Client ID sent to the broker.
-    pub client_id: String,
-    /// Optional login data
-    pub login: Option<Login>,
-    /// Keep alive. Note that MQTT only uses whole seconds for keep alive.
-    ///
-    /// A value greater than `u16::MAX` seconds will be truncated to `u16::MAX`.
-    ///
-    /// Set to zero to disable keep alive handling (not recommended though). See the documentation
-    /// for [`SessionTask`] for more information on how keep alive is used.
-    ///
-    ///
-    pub keep_alive: Duration,
-    /// Request a clean session or to reuse an existing session on the broker side.
-    pub clean_session: bool,
+    connect: v4::Connect
 }
 
 impl SessionConfig {
@@ -131,6 +118,7 @@ impl SessionConfig {
     /// * `login`: `None`
     /// * `keep_alive`: 5 minutes
     /// * `clean_session`: `false`
+    /// * `last_will`: `None`
     ///
     /// # Arguments
     ///
@@ -146,20 +134,76 @@ impl SessionConfig {
     /// # use std::time::Duration;
     /// # use slimqtt::session::SessionConfig;
     /// let config = SessionConfig::new("slimqtt-client");
-    /// assert_eq!(config, SessionConfig {
-    ///     client_id: "slimqtt-client".to_string(),
-    ///     login: None,
-    ///     keep_alive: Duration::from_secs(5*60),
-    ///     clean_session: false,
-    /// });
+    ///
+    /// assert_eq!(config, SessionConfig::new("slimqtt-client")
+    /// .set_login(None)
+    /// .set_clean_session(false)
+    /// .set_keep_alive(Duration::from_secs(5*60))
+    /// .clone());
     /// ```
     pub fn new<S: ToString>(client_id: S) -> Self {
         SessionConfig {
-            client_id: client_id.to_string(),
-            login: None,
-            keep_alive: Duration::from_secs(5 * 60),
-            clean_session: false,
+            connect: v4::Connect {
+                client_id: client_id.to_string(),
+                login: None,
+                keep_alive: 5 * 60,
+                clean_session: false,
+                last_will: None,
+                protocol: mqttbytes::Protocol::V4
+            }
         }
+    }
+
+    /// Get the login data of the session configuration
+    pub fn login(&self) -> &Option<Login> {
+        &self.connect.login
+    }
+
+    /// Set new login data
+    pub fn set_login(&mut self, login: Option<Login>) -> &mut Self {
+        self.connect.login = login;
+        self
+    }
+
+    /// Get the current keep alive configuration.
+    pub fn keep_alive(&self) -> Duration {
+        Duration::from_secs(self.connect.keep_alive.into())
+    }
+
+    /// Set keep alive. Note that MQTT only uses whole seconds for keep alive.
+    ///
+    /// A value greater than `u16::MAX` seconds will be truncated to `u16::MAX`.
+    ///
+    /// Set to zero to disable keep alive handling (not recommended though).
+    pub fn set_keep_alive(&mut self, keep_alive: Duration) -> &mut Self {
+        self.connect.keep_alive = keep_alive.min(Duration::from_secs(u16::MAX.into())).as_secs() as u16;
+        self
+    }
+
+    /// Get the current clean session configuration.
+    pub fn clean_session(&self) -> bool {
+        self.connect.clean_session
+    }
+
+    /// Set a new clean session configuration
+    pub fn set_clean_session(&mut self, clean_session: bool) -> &mut Self {
+        self.connect.clean_session = clean_session;
+        self
+    }
+
+    /// Get the configured last will
+    pub fn last_will(&self) -> &Option<LastWill> {
+        &self.connect.last_will
+    }
+
+    /// Set a new last will to be used.
+    pub fn set_last_will(&mut self, last_will: Option<LastWill>) -> &mut Self {
+        self.connect.last_will = last_will;
+        self
+    }
+
+    pub(crate) fn as_connect(&self) -> &v4::Connect {
+        &self.connect
     }
 }
 

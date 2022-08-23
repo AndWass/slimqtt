@@ -1,5 +1,6 @@
-use slimqtt::session::*;
 use std::time::Duration;
+
+use slimqtt::session::*;
 
 #[tokio::main]
 async fn main() {
@@ -7,14 +8,15 @@ async fn main() {
     let stream = tokio::net::TcpStream::connect("test.mosquitto.org:1883")
         .await
         .unwrap();
-    let (mut session, mut task) = Session::new(
-        stream,
-        SessionConfig {
-            client_id: "11231abc".to_string(),
-            keep_alive: Duration::from_secs(30),
-            login: None,
-            clean_session: true,
-        },
-    );
+    let mut config = SessionConfig::new("slimqtt-hello-world");
+    config
+        .set_keep_alive(Duration::from_secs(30))
+        .set_last_will(Some(LastWill::new(
+            "/hello-slimqtt",
+            b"Hello world".to_vec(),
+            QoS::AtLeastOnce,
+            false,
+        )));
+    let (mut session, mut task) = Session::new(stream, config);
     log::info!("{:?}", task.run().await);
 }
