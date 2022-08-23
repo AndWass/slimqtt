@@ -64,6 +64,7 @@
 //! ```
 
 mod task;
+mod keep_alive;
 
 use std::time::Duration;
 
@@ -72,7 +73,7 @@ use mqttbytes::v4::Packet;
 use crate::codec::CodecError;
 
 use mqttbytes::v4;
-pub use mqttbytes::v4::{LastWill, Login, SubscribeFilter};
+pub use mqttbytes::v4::{LastWill, Login, SubscribeFilter, Publish};
 pub use mqttbytes::QoS;
 pub use task::SessionTask;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -114,13 +115,16 @@ pub enum PublishError {
     ProtocolError(mqttbytes::Error),
     #[error("Session has ended before message could be published")]
     SessionEnded,
+    #[error("Unspecified error: {0}")]
+    Unspecified(String),
 }
 
-impl From<&CodecError> for PublishError {
-    fn from(err: &CodecError) -> Self {
+impl From<&Error> for PublishError {
+    fn from(err: &Error) -> Self {
         match err {
-            CodecError::IoError(x) => Self::IoError(x.kind()),
-            CodecError::ProtocolError(err) => Self::ProtocolError(err.clone()),
+            Error::IoError(io) => Self::IoError(io.kind()),
+            Error::ProtocolError(x) => Self::ProtocolError(x.clone()),
+            x => Self::Unspecified(format!("{:?}", x))
         }
     }
 }
@@ -231,7 +235,7 @@ impl SessionConfig {
 }
 
 pub struct Session {
-    task_channel: tokio::sync::mpsc::Sender<task::SessionEvent>,
+    task_channel: tokio::sync::mpsc::Sender<task::TaskCommand>,
 }
 
 impl Session {
@@ -248,18 +252,13 @@ impl Session {
         )
     }
 
-    pub async fn publish<S: ToString, B: Into<bytes::Bytes>>(
+    pub async fn publish(
         &mut self,
-        topic: S,
-        data: B,
+        publish: v4::Publish
     ) -> Result<(), PublishError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.task_channel
-            .send(task::SessionEvent::Publish(task::PublishEvent {
-                topic: topic.to_string(),
-                data: data.into(),
-                response: tx,
-            }))
+            .send(task::TaskCommand::Publish(publish, tx))
             .await
             .or_else(|_| Err(PublishError::SessionEnded))?;
 
