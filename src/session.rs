@@ -56,7 +56,7 @@
 //! options.keep_alive = Duration::from_secs(5);
 //!
 //! let stream = TcpStream::connect("test.mosquitto.org:1883").await.unwrap();
-//! let mut task = Session::new(stream, options);
+//! let (mut session, mut task) = Session::new(stream, options);
 //! // Run the task loop. If/when this returns
 //! // the session cannot be restarted without calling reset first.
 //! println!("Session result: {:?}", task.run().await);
@@ -166,10 +166,10 @@ impl SessionConfig {
 pub struct Session {}
 
 impl Session {
-    pub fn new<Stream>(stream: Stream, config: SessionConfig) -> SessionTask<Stream>
+    pub fn new<Stream>(stream: Stream, config: SessionConfig) -> (Session, SessionTask<Stream>)
     where
         Stream: Unpin + AsyncRead + AsyncWrite,
     {
-        SessionTask::new(stream, config)
+        (Session {}, SessionTask::new(stream, config))
     }
 }

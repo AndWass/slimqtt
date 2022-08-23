@@ -7,7 +7,7 @@ async fn main() {
     let stream = tokio::net::TcpStream::connect("test.mosquitto.org:1883")
         .await
         .unwrap();
-    let mut client = Session::new(
+    let (mut session, mut task) = Session::new(
         stream,
         SessionConfig {
             client_id: "11231abc".to_string(),
@@ -16,5 +16,5 @@ async fn main() {
             clean_session: true,
         },
     );
-    log::info!("{:?}", client.run().await);
+    log::info!("{:?}", task.run().await);
 }
