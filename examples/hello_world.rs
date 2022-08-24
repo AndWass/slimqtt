@@ -14,11 +14,6 @@ async fn main() {
     tokio::spawn(async move { task.run().await });
     for x in 1..=10 {
         let publish = Publish::new("/slimqtt", QoS::AtMostOnce, format!("Hello world {}", x));
-        println!(
-            "Publish result: {:?}",
-            session
-                .publish(publish)
-                .await
-        );
+        println!("Publish result: {:?}", session.publish(publish).await);
     }
 }

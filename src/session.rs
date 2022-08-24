@@ -63,8 +63,9 @@
 //! # });
 //! ```
 
-mod task;
 mod keep_alive;
+mod packet_id;
+mod task;
 
 use std::time::Duration;
 
@@ -72,8 +73,9 @@ use mqttbytes::v4::Packet;
 
 use crate::codec::CodecError;
 
+use crate::session::task::CommandResultTx;
 use mqttbytes::v4;
-pub use mqttbytes::v4::{LastWill, Login, SubscribeFilter, Publish};
+pub use mqttbytes::v4::{LastWill, Login, Publish, SubscribeFilter};
 pub use mqttbytes::QoS;
 pub use task::SessionTask;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -117,6 +119,8 @@ pub enum PublishError {
     SessionEnded,
     #[error("Unspecified error: {0}")]
     Unspecified(String),
+    #[error("No packet ID available")]
+    NoPacketIdAvailable,
 }
 
 impl From<&Error> for PublishError {
@@ -124,7 +128,16 @@ impl From<&Error> for PublishError {
         match err {
             Error::IoError(io) => Self::IoError(io.kind()),
             Error::ProtocolError(x) => Self::ProtocolError(x.clone()),
-            x => Self::Unspecified(format!("{:?}", x))
+            x => Self::Unspecified(format!("{:?}", x)),
+        }
+    }
+}
+
+impl From<&CodecError> for PublishError {
+    fn from(e: &CodecError) -> Self {
+        match e {
+            CodecError::IoError(io) => Self::IoError(io.kind()),
+            CodecError::ProtocolError(pe) => Self::ProtocolError(pe.clone()),
         }
     }
 }
@@ -252,13 +265,10 @@ impl Session {
         )
     }
 
-    pub async fn publish(
-        &mut self,
-        publish: v4::Publish
-    ) -> Result<(), PublishError> {
+    pub async fn publish(&mut self, publish: v4::Publish) -> Result<(), PublishError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.task_channel
-            .send(task::TaskCommand::Publish(publish, tx))
+            .send(task::TaskCommand::Publish(publish, CommandResultTx(tx)))
             .await
             .or_else(|_| Err(PublishError::SessionEnded))?;
 
