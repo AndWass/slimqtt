@@ -7,24 +7,7 @@ edition = "2021"
 
 [dependencies]
 thiserror = "1"
-mqttbytes = "0.6.0"
-bytes = "1.2"
-futures = "0.3"
-log = "0.4"
-pin-project-lite = "0.2"
-slab = "0.4"
-
-[dependencies.tokio]
-version = "1"
-features = ["macros", "time", "sync"]
-
-[dependencies.tokio-util]
-version = "0.7"
-features = ["codec"]
-
-[dev-dependencies]
-simple_logger = "2.2"
-tokio-test = "0.4.2"
+nom = "7.1"
 
 [dev-dependencies.tokio]
 version = "1"
